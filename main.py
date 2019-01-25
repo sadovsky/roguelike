@@ -940,7 +940,7 @@ def play_game():
 
 
 def main_menu():
-    img = image_load('menu_background.png')
+    img = image_load('menu_background1.png')
 
     while not tdl.event.is_window_closed():
         # show the background image, at twice the regular console resolution
@@ -951,7 +951,7 @@ def main_menu():
         center = (SCREEN_WIDTH - len(title)) // 2
         root.draw_str(center, SCREEN_HEIGHT // 2 - 4, title, bg=None, fg=colors.light_yellow)
 
-        title = 'By Jotaf'
+        title = 'roguelike'
         center = (SCREEN_WIDTH - len(title)) // 2
         root.draw_str(center, SCREEN_HEIGHT - 2, title, bg=None, fg=colors.light_yellow)
 
