@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
-
 import tdl
 from random import randint
 import colors
+import math
 
 # actual size of the window
 SCREEN_WIDTH = 80
@@ -67,19 +66,52 @@ class Rect:
 class GameObject:
     # this is a generic object: the player, a monster, an item, the stairs...
     # it's always represented by a character on screen.
-    def __init__(self, x, y, char, name, color, blocks=False):
+    def __init__(self, x, y, char, name, color, blocks=False,
+                 fighter=None, ai=None):
         self.x = x
         self.y = y
         self.char = char
         self.color = color
         self.name = name
         self.blocks = blocks
+        self.fighter = fighter
+
+        if self.fighter:  # let the fighter component know who owns it
+            self.fighter.owner = self
+
+        self.ai = ai
+        if self.ai:  # let the AI component know who owns it
+            self.ai.owner = self
 
     def move(self, dx, dy):
         # move by the given amount, if the destination is not blocked
         if not is_blocked(self.x + dx, self.y + dy):
             self.x += dx
             self.y += dy
+
+    def move_towards(self, target_x, target_y):
+        # vector from this object to the target, and distance
+        dx = target_x - self.x
+        dy = target_y - self.y
+        distance = math.sqrt(dx ** 2 + dy ** 2)
+
+        # normalize it to length 1 (preserving direction), then round it and
+        # convert to integer so the movement is restricted to the map grid
+        dx = int(round(dx / distance))
+        dy = int(round(dy / distance))
+        self.move(dx, dy)
+
+    def distance_to(self, other):
+        # return the distance to another object
+        dx = other.x - self.x
+        dy = other.y - self.y
+        return math.sqrt(dx ** 2 + dy ** 2)
+
+    def send_to_back(self):
+        # make this object be drawn first, so all others appear above it if they're in the same tile.
+        global objects
+        objects.remove(self)
+        objects.insert(0, self)
 
     def draw(self):
         global visible_tiles
@@ -92,6 +124,56 @@ class GameObject:
     def clear(self):
         # erase the character that represents this object
         con.draw_char(self.x, self.y, ' ', self.color, bg=None)
+
+
+class Fighter:
+    # combat-related properties and methods (monster, player, NPC).
+    def __init__(self, hp, defense, power, death_function=None):
+        self.max_hp = hp
+        self.hp = hp
+        self.defense = defense
+        self.power = power
+        self.death_function = death_function
+
+    def take_damage(self, damage):
+        # apply damage if possible
+        if damage > 0:
+            self.hp -= damage
+
+            # check for death. if there's a death function, call it
+            if self.hp <= 0:
+                function = self.death_function
+                if function is not None:
+                    function(self.owner)
+
+    def attack(self, target):
+        # a simple formula for attack damage
+        damage = self.power - target.fighter.defense
+
+        if damage > 0:
+            # make the target take some damage
+            print(self.owner.name.capitalize() + ' attacks ' + target.name +
+                  ' for ' + str(damage) + ' hit points.')
+            target.fighter.take_damage(damage)
+        else:
+            print(self.owner.name.capitalize() + ' attacks ' + target.name +
+                  ' but it has no effect!')
+
+
+class BasicMonster:
+    # AI for a basic monster.
+    def take_turn(self):
+        # a basic monster takes its turn. If you can see it, it can see you
+        monster = self.owner
+        if (monster.x, monster.y) in visible_tiles:
+
+            # move towards player if far away
+            if monster.distance_to(player) >= 2:
+                monster.move_towards(player.x, player.y)
+
+            # close enough, attack! (if the player is still alive.)
+            elif player.fighter.hp > 0:
+                monster.fighter.attack(player)
 
 
 def is_blocked(x, y):
@@ -227,16 +309,20 @@ def place_objects(room):
         if not is_blocked(x, y):
             if randint(0, 100) < 80:  # 80% chance of getting an orc
                 # create an orc
-                monster = GameObject(x, y,
-                                     'o', 'orc',
-                                     colors.desaturated_green,
-                                     blocks=True)
+                fighter_component = Fighter(hp=10, defense=0, power=3,
+                                            death_function=monster_death)
+                ai_component = BasicMonster()
+
+                monster = GameObject(x, y, 'o', 'orc', colors.desaturated_green,
+                                     blocks=True, fighter=fighter_component, ai=ai_component)
             else:
                 # create a troll
-                monster = GameObject(x, y,
-                                     'T', 'troll',
-                                     colors.darker_green,
-                                     blocks=True)
+                fighter_component = Fighter(hp=16, defense=1, power=4,
+                                            death_function=monster_death)
+                ai_component = BasicMonster()
+
+                monster = GameObject(x, y, 'T', 'troll', colors.darker_green,
+                                     blocks=True, fighter=fighter_component, ai=ai_component)
 
             objects.append(monster)
 
@@ -253,7 +339,7 @@ def render_all():
                                          radius=TORCH_RADIUS,
                                          lightWalls=FOV_LIGHT_WALLS)
 
-        # go through all tiles, and set their background color  according to the FOV
+        # go through all tiles, and set their background color according to the FOV
         for y in range(MAP_HEIGHT):
             for x in range(MAP_WIDTH):
                 visible = (x, y) in visible_tiles
@@ -275,10 +361,15 @@ def render_all():
 
     # draw all objects in the list
     for obj in objects:
-        obj.draw()
-
+        if obj != player:
+            obj.draw()
+    player.draw()
     # blit the contents of "con" to the root console and present it
     root.blit(con, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0)
+
+    # show the player's stats
+    con.draw_str(1, SCREEN_HEIGHT - 2, 'HP: ' + str(player.fighter.hp) + '/' +
+                 str(player.fighter.max_hp) + ' ')
 
 
 def player_move_or_attack(dx, dy):
@@ -291,13 +382,13 @@ def player_move_or_attack(dx, dy):
     # try to find an attackable object there
     target = None
     for obj in objects:
-        if obj.x == x and obj.y == y:
+        if obj.fighter and obj.x == x and obj.y == y:
             target = obj
             break
 
     # attack if target found, move otherwise
     if target is not None:
-        print('The ' + target.name + ' laughs at your puny efforts to attack him!')
+        player.fighter.attack(target)
     else:
         player.move(dx, dy)
         fov_recompute = True
@@ -321,7 +412,7 @@ def handle_keys():
 
     if user_input.key == 'ENTER' and user_input.alt:
         # Alt+Enter: toggle fullscreen
-        tdl.set_fullscreen(not tdl.get_fullscreen())
+        tdl.set_fullscreen(True)
 
     elif user_input.key == 'ESCAPE':
         return 'exit'  # exit game
@@ -343,6 +434,30 @@ def handle_keys():
             return 'didnt-take-turn'
 
 
+def player_death(player):
+    # the game ended!
+    global game_state
+    print('You died!')
+    game_state = 'dead'
+
+    # for added effect, transform the player into a corpse!
+    player.char = '%'
+    player.color = colors.dark_red
+
+
+def monster_death(monster):
+    # transform it into a nasty corpse! it doesn't block, can't be
+    # attacked and doesn't move
+    print(monster.name.capitalize() + ' is dead!')
+    monster.char = '%'
+    monster.color = colors.dark_red
+    monster.blocks = False
+    monster.fighter = None
+    monster.ai = None
+    monster.name = 'remains of ' + monster.name
+    monster.send_to_back()
+
+
 #############################################
 # Initialization & Main Loop                #
 #############################################
@@ -353,12 +468,8 @@ tdl.setFPS(LIMIT_FPS)
 con = tdl.Console(SCREEN_WIDTH, SCREEN_HEIGHT)
 
 # create object representing the player
-player = GameObject(SCREEN_WIDTH // 2,
-                    SCREEN_HEIGHT // 2,
-                    '@',
-                    'player',
-                    colors.white,
-                    blocks=True)
+fighter_component = Fighter(hp=30, defense=2, power=5, death_function=player_death)
+player = GameObject(0, 0, '@', 'player', colors.white, blocks=True, fighter=fighter_component)
 
 # the list of objects with those two
 objects = [player]
@@ -389,5 +500,5 @@ while not tdl.event.is_window_closed():
     # let monsters take their turn
     if game_state == 'playing' and player_action != 'didnt-take-turn':
         for obj in objects:
-            if obj != player:
-                print('The ' + obj.name + ' growls!')
+            if obj.ai:
+                obj.ai.take_turn()
