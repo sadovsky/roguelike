@@ -1,5 +1,8 @@
+#!/usr/bin/env python3
+
 import tdl
 from random import randint
+import colors
 
 # actual size of the window
 SCREEN_WIDTH = 80
@@ -13,6 +16,7 @@ MAP_HEIGHT = 45
 ROOM_MAX_SIZE = 10
 ROOM_MIN_SIZE = 6
 MAX_ROOMS = 30
+MAX_ROOM_MONSTERS = 3
 
 FOV_ALGO = 'BASIC'
 FOV_LIGHT_WALLS = True
@@ -63,15 +67,17 @@ class Rect:
 class GameObject:
     # this is a generic object: the player, a monster, an item, the stairs...
     # it's always represented by a character on screen.
-    def __init__(self, x, y, char, color):
+    def __init__(self, x, y, char, name, color, blocks=False):
         self.x = x
         self.y = y
         self.char = char
         self.color = color
+        self.name = name
+        self.blocks = blocks
 
     def move(self, dx, dy):
         # move by the given amount, if the destination is not blocked
-        if not my_map[self.x + dx][self.y + dy].blocked:
+        if not is_blocked(self.x + dx, self.y + dy):
             self.x += dx
             self.y += dy
 
@@ -86,6 +92,19 @@ class GameObject:
     def clear(self):
         # erase the character that represents this object
         con.draw_char(self.x, self.y, ' ', self.color, bg=None)
+
+
+def is_blocked(x, y):
+    # first test the map tile
+    if my_map[x][y].blocked:
+        return True
+
+    # now check for any blocking objects
+    for obj in objects:
+        if obj.blocks and obj.x == x and obj.y == y:
+            return True
+
+    return False
 
 
 def create_room(room):
@@ -187,9 +206,39 @@ def make_map():
                     create_v_tunnel(prev_y, new_y, prev_x)
                     create_h_tunnel(prev_x, new_x, new_y)
 
+            # add some contents to this room, such as monsters
+            place_objects(new_room)
+
             # finally, append the new room to the list
             rooms.append(new_room)
             num_rooms += 1
+
+
+def place_objects(room):
+    # choose random number of monsters
+    num_monsters = randint(0, MAX_ROOM_MONSTERS)
+
+    for i in range(num_monsters):
+        # choose random spot for this monster
+        x = randint(room.x1, room.x2)
+        y = randint(room.y1, room.y2)
+
+        # only place it if the tile is not blocked
+        if not is_blocked(x, y):
+            if randint(0, 100) < 80:  # 80% chance of getting an orc
+                # create an orc
+                monster = GameObject(x, y,
+                                     'o', 'orc',
+                                     colors.desaturated_green,
+                                     blocks=True)
+            else:
+                # create a troll
+                monster = GameObject(x, y,
+                                     'T', 'troll',
+                                     colors.darker_green,
+                                     blocks=True)
+
+            objects.append(monster)
 
 
 def render_all():
@@ -232,6 +281,28 @@ def render_all():
     root.blit(con, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0)
 
 
+def player_move_or_attack(dx, dy):
+    global fov_recompute
+
+    # the coordinates the player is moving to/attacking
+    x = player.x + dx
+    y = player.y + dy
+
+    # try to find an attackable object there
+    target = None
+    for obj in objects:
+        if obj.x == x and obj.y == y:
+            target = obj
+            break
+
+    # attack if target found, move otherwise
+    if target is not None:
+        print('The ' + target.name + ' laughs at your puny efforts to attack him!')
+    else:
+        player.move(dx, dy)
+        fov_recompute = True
+
+
 def handle_keys():
     global playerx, playery
     global fov_recompute
@@ -250,27 +321,26 @@ def handle_keys():
 
     if user_input.key == 'ENTER' and user_input.alt:
         # Alt+Enter: toggle fullscreen
-        tdl.set_fullscreen(True)
+        tdl.set_fullscreen(not tdl.get_fullscreen())
 
     elif user_input.key == 'ESCAPE':
-        return True  # exit game
+        return 'exit'  # exit game
 
-    # movement keys
-    if user_input.key == 'UP':
-        player.move(0, -1)
-        fov_recompute = True
+    if game_state == 'playing':
+        # movement keys
+        if user_input.key == 'UP':
+            player_move_or_attack(0, -1)
 
-    elif user_input.key == 'DOWN':
-        player.move(0, 1)
-        fov_recompute = True
+        elif user_input.key == 'DOWN':
+            player_move_or_attack(0, 1)
 
-    elif user_input.key == 'LEFT':
-        player.move(-1, 0)
-        fov_recompute = True
+        elif user_input.key == 'LEFT':
+            player_move_or_attack(-1, 0)
 
-    elif user_input.key == 'RIGHT':
-        player.move(1, 0)
-        fov_recompute = True
+        elif user_input.key == 'RIGHT':
+            player_move_or_attack(1, 0)
+        else:
+            return 'didnt-take-turn'
 
 
 #############################################
@@ -283,18 +353,22 @@ tdl.setFPS(LIMIT_FPS)
 con = tdl.Console(SCREEN_WIDTH, SCREEN_HEIGHT)
 
 # create object representing the player
-player = GameObject(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2, '@', (255, 255, 255))
-
-# create an NPC
-npc = GameObject(SCREEN_WIDTH // 2 - 5, SCREEN_HEIGHT // 2, '@', (255, 255, 0))
+player = GameObject(SCREEN_WIDTH // 2,
+                    SCREEN_HEIGHT // 2,
+                    '@',
+                    'player',
+                    colors.white,
+                    blocks=True)
 
 # the list of objects with those two
-objects = [npc, player]
+objects = [player]
 
 # generate map (at this point it's not drawn to the screen)
 make_map()
 
 fov_recompute = True
+game_state = 'playing'
+player_action = None
 
 while not tdl.event.is_window_closed():
 
@@ -308,6 +382,12 @@ while not tdl.event.is_window_closed():
         obj.clear()
 
     # handle keys and exit game if needed
-    exit_game = handle_keys()
-    if exit_game:
+    player_action = handle_keys()
+    if player_action == 'exit':
         break
+
+    # let monsters take their turn
+    if game_state == 'playing' and player_action != 'didnt-take-turn':
+        for obj in objects:
+            if obj != player:
+                print('The ' + obj.name + ' growls!')
