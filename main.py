@@ -2,6 +2,7 @@ import tdl
 from random import randint
 import colors
 import math
+import textwrap
 
 # actual size of the window
 SCREEN_WIDTH = 80
@@ -9,7 +10,15 @@ SCREEN_HEIGHT = 50
 
 # size of the map
 MAP_WIDTH = 80
-MAP_HEIGHT = 45
+MAP_HEIGHT = 43
+
+# sizes and coordinates relevant for the GUI
+BAR_WIDTH = 20
+PANEL_HEIGHT = 7
+PANEL_Y = SCREEN_HEIGHT - PANEL_HEIGHT
+MSG_X = BAR_WIDTH + 2
+MSG_WIDTH = SCREEN_WIDTH - BAR_WIDTH - 2
+MSG_HEIGHT = PANEL_HEIGHT - 1
 
 # parameters for dungeon generator
 ROOM_MAX_SIZE = 10
@@ -21,7 +30,6 @@ FOV_ALGO = 'BASIC'
 FOV_LIGHT_WALLS = True
 TORCH_RADIUS = 10
 
-REALTIME = False
 LIMIT_FPS = 20  # 20 frames-per-second maximum
 
 color_dark_wall = (0, 0, 100)
@@ -152,12 +160,12 @@ class Fighter:
 
         if damage > 0:
             # make the target take some damage
-            print(self.owner.name.capitalize() + ' attacks ' + target.name +
-                  ' for ' + str(damage) + ' hit points.')
+            message(self.owner.name.capitalize() + ' attacks ' + target.name +
+                    ' for ' + str(damage) + ' hit points.')
             target.fighter.take_damage(damage)
         else:
-            print(self.owner.name.capitalize() + ' attacks ' + target.name +
-                  ' but it has no effect!')
+            message(self.owner.name.capitalize() + ' attacks ' + target.name +
+                    ' but it has no effect!')
 
 
 class BasicMonster:
@@ -327,6 +335,35 @@ def place_objects(room):
             objects.append(monster)
 
 
+def render_bar(x, y, total_width, name, value, maximum, bar_color, back_color):
+    # render a bar (HP, experience, etc). first calculate the width of the bar
+    bar_width = int(float(value) / maximum * total_width)
+
+    # render the background first
+    panel.draw_rect(x, y, total_width, 1, None, bg=back_color)
+
+    # now render the bar on top
+    if bar_width > 0:
+        panel.draw_rect(x, y, bar_width, 1, None, bg=bar_color)
+
+    # finally, some centered text with the values
+    text = name + ': ' + str(value) + '/' + str(maximum)
+    x_centered = x + (total_width - len(text)) // 2
+    panel.draw_str(x_centered, y, text, fg=colors.white, bg=None)
+
+
+def get_names_under_mouse():
+    # return a string with the names of all objects under the mouse
+    (x, y) = mouse_coord
+
+    # create a list with the names of all objects at the mouse's coordinates and in FOV
+    names = [obj.name for obj in objects
+             if obj.x == x and obj.y == y and (obj.x, obj.y) in visible_tiles]
+
+    names = ', '.join(names)  # join the names, separated by commas
+    return names.capitalize()
+
+
 def render_all():
     global fov_recompute
     global visible_tiles
@@ -365,11 +402,39 @@ def render_all():
             obj.draw()
     player.draw()
     # blit the contents of "con" to the root console and present it
-    root.blit(con, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0)
+    root.blit(con, 0, 0, MAP_WIDTH, MAP_HEIGHT, 0, 0)
+
+    # prepare to render the GUI panel
+    panel.clear(fg=colors.white, bg=colors.black)
+
+    # print the game messages, one line at a time
+    y = 1
+    for (line, color) in game_msgs:
+        panel.draw_str(MSG_X, y, line, bg=None, fg=color)
+        y += 1
 
     # show the player's stats
-    con.draw_str(1, SCREEN_HEIGHT - 2, 'HP: ' + str(player.fighter.hp) + '/' +
-                 str(player.fighter.max_hp) + ' ')
+    render_bar(1, 1, BAR_WIDTH, 'HP', player.fighter.hp, player.fighter.max_hp,
+               colors.light_red, colors.darker_red)
+
+    # display names of objects under the mouse
+    panel.draw_str(1, 0, get_names_under_mouse(), bg=None, fg=colors.light_gray)
+
+    # blit the contents of "panel" to the root console
+    root.blit(panel, 0, PANEL_Y, SCREEN_WIDTH, PANEL_HEIGHT, 0, 0)
+
+
+def message(new_msg, color=colors.white):
+    # split the message if necessary, among multiple lines
+    new_msg_lines = textwrap.wrap(new_msg, MSG_WIDTH)
+
+    for line in new_msg_lines:
+        # if the buffer is full, remove the first line to make room for the new one
+        if len(game_msgs) == MSG_HEIGHT:
+            del game_msgs[0]
+
+        # add the new line as a tuple, with the text and the color
+        game_msgs.append((line, color))
 
 
 def player_move_or_attack(dx, dy):
@@ -397,22 +462,22 @@ def player_move_or_attack(dx, dy):
 def handle_keys():
     global playerx, playery
     global fov_recompute
+    global mouse_coord
 
-    if REALTIME:
-        keypress = False
-        for event in tdl.event.get():
-            if event.type == 'KEYDOWN':
-                user_input = event
-                keypress = True
-        if not keypress:
-            return
+    keypress = False
+    for event in tdl.event.get():
+        if event.type == 'KEYDOWN':
+            user_input = event
+            keypress = True
+        if event.type == 'MOUSEMOTION':
+            mouse_coord = event.cell
 
-    else:  # turn-based
-        user_input = tdl.event.key_wait()
+    if not keypress:
+        return 'didnt-take-turn'  # TODO: Add to tutorial
 
     if user_input.key == 'ENTER' and user_input.alt:
         # Alt+Enter: toggle fullscreen
-        tdl.set_fullscreen(True)
+        tdl.set_fullscreen(not tdl.get_fullscreen())
 
     elif user_input.key == 'ESCAPE':
         return 'exit'  # exit game
@@ -437,7 +502,7 @@ def handle_keys():
 def player_death(player):
     # the game ended!
     global game_state
-    print('You died!')
+    message('You died!', colors.red)
     game_state = 'dead'
 
     # for added effect, transform the player into a corpse!
@@ -448,7 +513,7 @@ def player_death(player):
 def monster_death(monster):
     # transform it into a nasty corpse! it doesn't block, can't be
     # attacked and doesn't move
-    print(monster.name.capitalize() + ' is dead!')
+    message(monster.name.capitalize() + ' is dead!', colors.orange)
     monster.char = '%'
     monster.color = colors.dark_red
     monster.blocks = False
@@ -465,7 +530,8 @@ def monster_death(monster):
 tdl.set_font('arial10x10.png', greyscale=True, altLayout=True)
 root = tdl.init(SCREEN_WIDTH, SCREEN_HEIGHT, title="Roguelike", fullscreen=False)
 tdl.setFPS(LIMIT_FPS)
-con = tdl.Console(SCREEN_WIDTH, SCREEN_HEIGHT)
+con = tdl.Console(MAP_WIDTH, MAP_HEIGHT)
+panel = tdl.Console(SCREEN_WIDTH, PANEL_HEIGHT)
 
 # create object representing the player
 fighter_component = Fighter(hp=30, defense=2, power=5, death_function=player_death)
@@ -480,6 +546,15 @@ make_map()
 fov_recompute = True
 game_state = 'playing'
 player_action = None
+
+# create the list of game messages and their colors, starts empty
+game_msgs = []
+
+# a warm welcoming message!
+message('Welcome stranger! Prepare to perish in the Tombs of the Ancient Kings.',
+        colors.red)
+
+mouse_coord = (0, 0)
 
 while not tdl.event.is_window_closed():
 
